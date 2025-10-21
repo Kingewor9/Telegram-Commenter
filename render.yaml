@@ -1,0 +1,21 @@
+# Example Render service configuration (optional)
+# Deploy this repository as a Web Service on Render.
+
+services:
+  - type: web
+    name: telegram-commenter-web
+    env: python
+    plan: free
+    region: oregon
+    # Start command uses gunicorn to serve the Flask app and bind to $PORT
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn --bind 0.0.0.0:$PORT app:app"
+    envVars:
+      - key: API_ID
+        value: ""
+      - key: API_HASH
+        value: ""
+      - key: TELEGRAM_SESSION_NAME
+        value: "session_name"
+      - key: LOG_LEVEL
+        value: "INFO"
