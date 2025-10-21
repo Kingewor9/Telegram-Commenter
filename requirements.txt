@@ -23,5 +23,6 @@ Telethon==1.39.0
 tqdm==4.67.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
-Flask==2.3.4
+# Use the latest released 2.x Flask available on PyPI
+Flask==2.3.3
 gunicorn==21.2.0
