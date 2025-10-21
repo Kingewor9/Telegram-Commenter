@@ -9,4 +9,4 @@ CHANNELS = ["tiktokleadsgen", "stockverified"]
 MODE = "RANDOM"   # or "AI"
 DELAY_RANGE = (15, 60)
 SKIP_PROBABILITY = 0.3
-LOG_ONLY = True   # keep True to avoid real posting
+LOG_ONLY = False   # For posting on comments, I'll change to True if I want logs print only
