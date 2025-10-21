@@ -11,6 +11,7 @@ load_dotenv()
 
 # Import app-specific modules lazily (so Flask can import without starting the worker in some contexts)
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 import config as cfg
 from modules.listener import register_handlers
 
@@ -31,7 +32,14 @@ def start_telethon_loop():
     cfg.API_ID = int(os.getenv("API_ID") or 0)
     cfg.API_HASH = os.getenv("API_HASH") or ""
 
-    client = TelegramClient(os.getenv("TELEGRAM_SESSION_NAME", "session_name"), cfg.API_ID, cfg.API_HASH)
+    # Prefer a string session provided via env var (safe to store as secret), else fall back to a named session file
+    string_session = os.getenv("TELEGRAM_STRING_SESSION")
+    if string_session:
+        session_obj = StringSession(string_session)
+    else:
+        session_obj = os.getenv("TELEGRAM_SESSION_NAME", "session_name")
+
+    client = TelegramClient(session_obj, cfg.API_ID, cfg.API_HASH)
 
     async def runner():
         await client.start()
@@ -64,6 +72,16 @@ def start_worker():
     print("Background worker thread started")
 
 
+# Ensure the worker auto-starts when the Flask app receives its first request
+@app.before_first_request
+def _auto_start_worker():
+    print("Flask first request hook: starting background worker if not running")
+    start_worker()
+
+
+# Attach SIGTERM handler is done after the handler function is defined below
+
+
 @app.route("/health")
 def health():
     """Simple health endpoint so Render thinks this is a web service."""
@@ -90,6 +108,12 @@ def handle_sigterm(*_):
     except Exception:
         pass
     stop_event.set()
+
+
+try:
+    signal.signal(signal.SIGTERM, handle_sigterm)
+except Exception:
+    pass
 
 
 if __name__ == "__main__":
