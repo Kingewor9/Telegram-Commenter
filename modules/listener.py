@@ -4,11 +4,16 @@ from modules.comment_generator import generate_comment
 from modules.delay_manager import wait_random_delay
 
 def register_handlers(client, cfg):
+    print(f"Registering handler for channels: {cfg.CHANNELS}")
+
     @client.on(events.NewMessage(chats=cfg.CHANNELS))
     async def handler(event):
+        chat = getattr(event.chat, 'username', None) or getattr(event.chat, 'id', None)
+        print(f"Handler triggered for chat: {chat}")
+
         # Skip chance
         if random.random() < cfg.SKIP_PROBABILITY:
-            print(f"Skipped commenting on {event.chat.username}")
+            print(f"Skipped commenting on {chat}")
             return
 
         await wait_random_delay(cfg.DELAY_RANGE)
@@ -17,9 +22,10 @@ def register_handlers(client, cfg):
         comment_text = generate_comment(post_text, cfg.MODE)
 
         # Demo: print instead of sending
-        print(f"[{event.chat.username}] → would comment: {comment_text}")
+        print(f"[{chat}] → would comment: {comment_text}")
 
         if not cfg.LOG_ONLY:
             discussion = await event.get_discussion_message()
             if discussion:
+                print(f"Sending comment to discussion {discussion.chat_id}")
                 await client.send_message(discussion.chat_id, comment_text)
