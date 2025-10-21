@@ -95,6 +95,16 @@ def health():
     return jsonify(status)
 
 
+@app.route("/")
+def index():
+    """Root endpoint: keep simple and start worker so platform checks that hit `/` will trigger the worker."""
+    if not (worker_thread and worker_thread.is_alive()):
+        print("Root endpoint: worker not running, starting worker")
+        start_worker()
+
+    return jsonify({"status": "ok", "worker_running": bool(worker_thread and worker_thread.is_alive())})
+
+
 @app.route("/start-worker", methods=["POST"])
 def start_worker_endpoint():
     """Optional endpoint to start the worker if you don't want it to auto-start."""
