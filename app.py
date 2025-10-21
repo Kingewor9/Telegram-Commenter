@@ -72,11 +72,8 @@ def start_worker():
     print("Background worker thread started")
 
 
-# Ensure the worker auto-starts when the Flask app receives its first request
-@app.before_first_request
-def _auto_start_worker():
-    print("Flask first request hook: starting background worker if not running")
-    start_worker()
+# Some Flask builds (or Flask 3.x) may not have before_first_request available on the app
+# Start the worker lazily when health is called so hosting platforms trigger it reliably.
 
 
 # Attach SIGTERM handler is done after the handler function is defined below
@@ -85,6 +82,12 @@ def _auto_start_worker():
 @app.route("/health")
 def health():
     """Simple health endpoint so Render thinks this is a web service."""
+    # Start the worker on first health check if it's not already running. This avoids
+    # using `before_first_request`, which may not exist depending on the Flask build.
+    if not (worker_thread and worker_thread.is_alive()):
+        print("Health endpoint: worker not running, starting worker")
+        start_worker()
+
     status = {
         "worker_running": bool(worker_thread and worker_thread.is_alive()),
         "port": PORT,
