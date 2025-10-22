@@ -34,6 +34,7 @@ def start_telethon_loop():
 
     # Prefer a string session provided via env var (safe to store as secret), else fall back to a named session file
     string_session = os.getenv("TELEGRAM_STRING_SESSION")
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if string_session:
         session_obj = StringSession(string_session)
     else:
@@ -42,7 +43,29 @@ def start_telethon_loop():
     client = TelegramClient(session_obj, cfg.API_ID, cfg.API_HASH)
 
     async def runner():
-        await client.start()
+        # Start with a bot token if provided (avoids interactive phone prompt)
+        if bot_token:
+            print("Starting Telethon with bot token")
+            await client.start(bot_token=bot_token)
+        else:
+            # If a string session was provided we can start non-interactively
+            if string_session:
+                print("Starting Telethon with TELEGRAM_STRING_SESSION")
+                await client.start()
+            else:
+                # If no string session and no bot token, make sure a local session file exists
+                # to avoid Telethon prompting for phone input on a headless host.
+                import pathlib
+                sess_name = session_obj if isinstance(session_obj, str) else None
+                if sess_name:
+                    session_file = pathlib.Path(f"{sess_name}.session")
+                    if not session_file.exists():
+                        print("ERROR: No TELEGRAM_STRING_SESSION or TELEGRAM_BOT_TOKEN set and session file not found.")
+                        print("On headless hosts Telethon would prompt for a phone number (interactive) which fails.")
+                        print("Please provide a TELEGRAM_STRING_SESSION or TELEGRAM_BOT_TOKEN as an environment variable.")
+                        return
+                print("Starting Telethon with local session file")
+                await client.start()
         register_handlers(client, cfg)
         print("Telethon client started in background worker")
         # run until explicitly disconnected
