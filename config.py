@@ -19,3 +19,8 @@ REPLY_QUEUE_POLL_INTERVAL = 3
 COOLDOWN = 300
 # How many recent messages to scan when searching for the discussion message
 REPLY_QUEUE_SEARCH_LIMIT = 1000
+# If True, allow reply jobs to be queued even when the server requests a wait longer
+# than REPLY_QUEUE_MAX_WAIT. Use with caution — this can cause jobs to sit for long periods.
+REPLY_QUEUE_ALLOW_LONG_WAIT = False
+# When allowing long waits, add this slack (seconds) after the required wait before giving up
+REPLY_QUEUE_LONG_WAIT_SLACK = 60
