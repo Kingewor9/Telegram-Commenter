@@ -24,3 +24,5 @@ REPLY_QUEUE_SEARCH_LIMIT = 1000
 REPLY_QUEUE_ALLOW_LONG_WAIT = False
 # When allowing long waits, add this slack (seconds) after the required wait before giving up
 REPLY_QUEUE_LONG_WAIT_SLACK = 60
+# When True, dump a compact debug view of recent messages for a discussion when mapping fails
+DEBUG_DUMP_RECENT = True
