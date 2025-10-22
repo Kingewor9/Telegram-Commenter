@@ -1,11 +1,17 @@
 import random
+import time
+import asyncio
 from telethon import events
+from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from modules.comment_generator import generate_comment
 from modules.delay_manager import wait_random_delay
 
 def register_handlers(client, cfg):
     print(f"Registering handler for channels: {cfg.CHANNELS}")
+
+    # Track last send timestamps per linked discussion (chat id) to avoid flood limits
+    last_sent = {}
 
     @client.on(events.NewMessage(chats=cfg.CHANNELS))
     async def handler(event):
@@ -52,44 +58,71 @@ def register_handlers(client, cfg):
                             except Exception as e:
                                 print('event.get_discussion_message not available or failed:', e)
 
-                            # If we couldn't find it that way, search recent messages in the linked chat
+                            # If we couldn't find it that way, search recent messages in the linked chat.
+                            # Retry a few times with backoff because the discussion message can be created slightly
+                            # after the channel post.
                             if not discussion_msg_id:
-                                try:
-                                    recent = await client.get_messages(linked, limit=200)
-                                    for m in recent:
-                                        # Check reply_to mapping (message in linked chat replying to the channel post)
-                                        rt = getattr(m, 'reply_to', None)
-                                        if rt:
-                                            # reply_to may be an object with reply_to_msg_id
-                                            rid = getattr(rt, 'reply_to_msg_id', None)
-                                            if rid == getattr(event.message, 'id', None):
-                                                discussion_msg_id = m.id
-                                                print('Found discussion message by reply_to mapping')
-                                                break
+                                retries = 3
+                                backoff = [1, 3, 6]
+                                for attempt in range(retries):
+                                    try:
+                                        recent = await client.get_messages(linked, limit=300)
+                                        for m in recent:
+                                            # Check reply_to mapping (message in linked chat replying to the channel post)
+                                            rt = getattr(m, 'reply_to', None)
+                                            if rt:
+                                                # reply_to may be an object with reply_to_msg_id
+                                                rid = getattr(rt, 'reply_to_msg_id', None)
+                                                if rid == getattr(event.message, 'id', None):
+                                                    discussion_msg_id = m.id
+                                                    print('Found discussion message by reply_to mapping')
+                                                    break
 
-                                        # Check forwarded-from mapping (some clients forward link)
-                                        ff = getattr(m, 'fwd_from', None)
-                                        if ff:
-                                            cid = getattr(ff, 'channel_id', None)
-                                            cpost = getattr(ff, 'channel_post', None)
-                                            if cid == getattr(event.chat, 'id', None) and cpost == getattr(event.message, 'id', None):
-                                                discussion_msg_id = m.id
-                                                print('Found discussion message by fwd_from mapping')
-                                                break
-                                except Exception as e:
-                                    print('Error searching linked discussion messages:', e)
+                                            # Check forwarded-from mapping (some clients forward link)
+                                            ff = getattr(m, 'fwd_from', None)
+                                            if ff:
+                                                cid = getattr(ff, 'channel_id', None)
+                                                cpost = getattr(ff, 'channel_post', None)
+                                                if cid == getattr(event.chat, 'id', None) and cpost == getattr(event.message, 'id', None):
+                                                    discussion_msg_id = m.id
+                                                    print('Found discussion message by fwd_from mapping')
+                                                    break
+                                        if discussion_msg_id:
+                                            break
+                                    except Exception as e:
+                                        print('Error searching linked discussion messages (attempt', attempt+1, '):', e)
 
-                            # If we found the discussion message, reply to it specifically
-                            if discussion_msg_id:
-                                try:
-                                    await client.send_message(linked, comment_text, reply_to=discussion_msg_id)
-                                    print('Comment sent to linked discussion (as reply)')
-                                except Exception as e:
-                                    print('Error sending reply to linked discussion:', e)
+                                    # if not found, wait before next attempt
+                                    if attempt < len(backoff):
+                                        await asyncio.sleep(backoff[attempt])
+
+                            # Now attempt to send while respecting local cooldowns and Telegram flood-wait
+                            now = time.time()
+                            cooldown = 300  # default cooldown per linked discussion in seconds
+                            last = last_sent.get(linked, 0)
+                            wait_needed = max(0, cooldown - (now - last))
+                            if wait_needed > 0:
+                                print(f"Local cooldown: need to wait {int(wait_needed)}s before sending to {linked}")
                             else:
-                                print('No specific discussion message found; sending a plain message to linked discussion')
-                                await client.send_message(linked, comment_text)
-                                print('Comment sent to linked discussion')
+                                try:
+                                    if discussion_msg_id:
+                                        await client.send_message(linked, comment_text, reply_to=discussion_msg_id)
+                                        print('Comment sent to linked discussion (as reply)')
+                                    else:
+                                        print('No specific discussion message found; sending a plain message to linked discussion')
+                                        await client.send_message(linked, comment_text)
+                                        print('Comment sent to linked discussion')
+
+                                    # record timestamp
+                                    last_sent[linked] = time.time()
+                                except FloodWaitError as fw:
+                                    # Telethon tells us how many seconds to wait
+                                    print('FloodWaitError: need to wait', fw.seconds, 'seconds')
+                                    # Respect the server ask
+                                    await asyncio.sleep(fw.seconds)
+                                    last_sent[linked] = time.time()
+                                except Exception as e:
+                                    print('Error sending comment:', e)
                     else:
                         print('No linked discussion found; attempting to reply (may require admin)')
                         await event.reply(comment_text)
