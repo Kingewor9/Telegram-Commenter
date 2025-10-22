@@ -25,7 +25,11 @@ def register_handlers(client, cfg):
         print(f"[{chat}] → would comment: {comment_text}")
 
         if not cfg.LOG_ONLY:
-            discussion = await event.get_discussion_message()
-            if discussion:
-                print(f"Sending comment to discussion {discussion.chat_id}")
-                await client.send_message(discussion.chat_id, comment_text)
+            try:
+                # Reply to the message. For channel posts, replying to the post will typically
+                # create a comment in the linked discussion (if available).
+                print(f"Attempting to send comment to chat {chat}")
+                await event.reply(comment_text)
+                print("Comment sent")
+            except Exception as e:
+                print("Error sending comment:", e)
