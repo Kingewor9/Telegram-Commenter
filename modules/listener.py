@@ -110,12 +110,18 @@ def register_handlers(client, cfg):
                                     if wait_seconds:
                                         next_allowed[linked] = time.time() + wait_seconds
                                         print('Error sending immediate plain message to linked discussion: server requires wait of', wait_seconds, 'seconds')
-                                        # If the required wait is longer than we will keep a job in the queue,
-                                        # don't enqueue a conversion job that will certainly timeout.
-                                        if wait_seconds > cfg.REPLY_QUEUE_MAX_WAIT:
+                                        # If the required wait is longer than REPLY_QUEUE_MAX_WAIT we usually
+                                        # avoid enqueuing a job that will certainly timeout. Allow optional
+                                        # long waits via config.
+                                        if wait_seconds > cfg.REPLY_QUEUE_MAX_WAIT and not getattr(cfg, 'REPLY_QUEUE_ALLOW_LONG_WAIT', False):
                                             print('Required wait exceeds reply-queue max wait; not enqueuing job')
                                         else:
-                                            print('Enqueuing reply job to wait for discussion message to appear')
+                                            give_up_at = time.time() + cfg.REPLY_QUEUE_MAX_WAIT
+                                            if wait_seconds > cfg.REPLY_QUEUE_MAX_WAIT:
+                                                # compute a give-up time based on server wait + optional slack
+                                                slack = getattr(cfg, 'REPLY_QUEUE_LONG_WAIT_SLACK', 60)
+                                                give_up_at = time.time() + wait_seconds + slack
+                                            print('Enqueuing reply job to wait for discussion message to appear (give_up_at=', give_up_at, ')')
                                             reply_queue.append({
                                                 'linked': linked,
                                                 'channel_id': getattr(event.chat, 'id', None),
@@ -124,11 +130,10 @@ def register_handlers(client, cfg):
                                                 'sent_message_id': None,
                                                 'enqueued_at': time.time(),
                                                 'blocked_until': next_allowed.get(linked, None),
+                                                'give_up_at': give_up_at,
                                             })
                                             print('Reply job enqueued (sent_message_id=', None, ')')
                                         # skip the normal enqueue below since we've already handled it
-                                        discussion_msg_id = discussion_msg_id
-                                        # move on
                                         return
                                     else:
                                         print('Error sending immediate plain message to linked discussion:', e)
@@ -253,7 +258,9 @@ def register_handlers(client, cfg):
             now = time.time()
             to_remove = []
             for i, job in enumerate(list(reply_queue)):
-                if now - job['enqueued_at'] > cfg.REPLY_QUEUE_MAX_WAIT:
+                # Use job-specific give_up_at if present otherwise fall back to global max wait
+                give_up = job.get('give_up_at', job['enqueued_at'] + cfg.REPLY_QUEUE_MAX_WAIT)
+                if now > give_up:
                     print('Dropping reply job due to timeout', job)
                     reply_queue.pop(i)
                     continue
