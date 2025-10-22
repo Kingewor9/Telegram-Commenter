@@ -1,5 +1,6 @@
 import random
 from telethon import events
+from telethon.tl.functions.channels import GetFullChannelRequest
 from modules.comment_generator import generate_comment
 from modules.delay_manager import wait_random_delay
 
@@ -26,10 +27,29 @@ def register_handlers(client, cfg):
 
         if not cfg.LOG_ONLY:
             try:
-                # Reply to the message. For channel posts, replying to the post will typically
-                # create a comment in the linked discussion (if available).
-                print(f"Attempting to send comment to chat {chat}")
-                await event.reply(comment_text)
-                print("Comment sent")
+                # If the message comes from a broadcast channel, sending a normal reply
+                # to the channel is often not allowed (you need admin privileges). Instead
+                # check whether the channel has a linked discussion (a group) and send
+                # the comment there. Otherwise, fall back to replying and log errors.
+                if getattr(event.chat, 'broadcast', False):
+                    try:
+                        full = await client(GetFullChannelRequest(event.chat))
+                        linked = getattr(full.full_chat, 'linked_chat_id', None)
+                    except Exception as e:
+                        print('Could not fetch full channel info:', e)
+                        linked = None
+
+                    if linked:
+                        print(f"Sending comment to linked discussion {linked}")
+                        await client.send_message(linked, comment_text)
+                        print('Comment sent to linked discussion')
+                    else:
+                        print('No linked discussion found; attempting to reply (may require admin)')
+                        await event.reply(comment_text)
+                        print('Reply sent (if permitted)')
+                else:
+                    # Not a broadcast channel — safe to reply normally
+                    await event.reply(comment_text)
+                    print('Reply sent')
             except Exception as e:
-                print("Error sending comment:", e)
+                print('Error sending comment:', e)
