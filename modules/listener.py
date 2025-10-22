@@ -1,6 +1,7 @@
 import random
 import time
 import asyncio
+import re
 from telethon import events
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
@@ -16,6 +17,8 @@ def register_handlers(client, cfg):
 
     # Track last send timestamps per linked discussion (chat id) to avoid flood limits
     last_sent = {}
+    # Track server-requested blocked-until timestamps per linked discussion
+    next_allowed = {}
 
     @client.on(events.NewMessage(chats=cfg.CHANNELS))
     async def handler(event):
@@ -68,7 +71,19 @@ def register_handlers(client, cfg):
                                     await client.send_message(linked, comment_text, reply_to=discussion_msg_id)
                                     print('Comment sent to linked discussion (as reply)')
                                 except Exception as e:
-                                    print('Error sending reply to linked discussion:', e)
+                                    # Try to parse a server-requested wait from the RPC error string
+                                    try:
+                                        msg = str(e)
+                                        m = re.search(r"wait of (\d+) seconds", msg)
+                                        wait_seconds = int(m.group(1)) if m else None
+                                    except Exception:
+                                        wait_seconds = None
+
+                                    if wait_seconds:
+                                        next_allowed[linked] = time.time() + wait_seconds
+                                        print('Server asked to wait', wait_seconds, 'seconds before sending to', linked)
+                                    else:
+                                        print('Error sending reply to linked discussion:', e)
                             else:
                                 # Attempt to send a plain message immediately so users see something.
                                 sent_id = None
@@ -77,19 +92,47 @@ def register_handlers(client, cfg):
                                     sent_id = getattr(m, 'id', None)
                                     print('Sent plain message to linked discussion (will convert later if possible)', sent_id)
                                 except Exception as e:
-                                    print('Error sending immediate plain message to linked discussion:', e)
+                                    # parse server wait errors like: "A wait of 881 seconds is required before sending another message in this chat"
+                                    wait_seconds = None
+                                    try:
+                                        msg = str(e)
+                                        m = re.search(r"wait of (\d+) seconds", msg)
+                                        if m:
+                                            wait_seconds = int(m.group(1))
+                                        else:
+                                            # fallback to grabbing first number of seconds mentioned
+                                            m2 = re.search(r"(\d+) seconds", msg)
+                                            if m2:
+                                                wait_seconds = int(m2.group(1))
+                                    except Exception:
+                                        wait_seconds = None
 
-                                # Enqueue a retry job that holds the sent_id so we can delete+repost later
-                                print('Enqueuing reply job to wait for discussion message to appear')
-                                reply_queue.append({
-                                    'linked': linked,
-                                    'channel_id': getattr(event.chat, 'id', None),
-                                    'event_msg_id': getattr(event.message, 'id', None),
-                                    'comment_text': comment_text,
-                                    'sent_message_id': sent_id,
-                                    'enqueued_at': time.time(),
-                                })
-                                print('Reply job enqueued (sent_message_id=', sent_id, ')')
+                                    if wait_seconds:
+                                        next_allowed[linked] = time.time() + wait_seconds
+                                        print('Error sending immediate plain message to linked discussion: server requires wait of', wait_seconds, 'seconds')
+                                        # If the required wait is longer than we will keep a job in the queue,
+                                        # don't enqueue a conversion job that will certainly timeout.
+                                        if wait_seconds > cfg.REPLY_QUEUE_MAX_WAIT:
+                                            print('Required wait exceeds reply-queue max wait; not enqueuing job')
+                                        else:
+                                            print('Enqueuing reply job to wait for discussion message to appear')
+                                            reply_queue.append({
+                                                'linked': linked,
+                                                'channel_id': getattr(event.chat, 'id', None),
+                                                'event_msg_id': getattr(event.message, 'id', None),
+                                                'comment_text': comment_text,
+                                                'sent_message_id': None,
+                                                'enqueued_at': time.time(),
+                                                'blocked_until': next_allowed.get(linked, None),
+                                            })
+                                            print('Reply job enqueued (sent_message_id=', None, ')')
+                                        # skip the normal enqueue below since we've already handled it
+                                        discussion_msg_id = discussion_msg_id
+                                        # move on
+                                        return
+                                    else:
+                                        print('Error sending immediate plain message to linked discussion:', e)
+                                # If we get here we either enqueued above or already printed the error
                                 retries = 4
                                 backoff = [2, 5, 10, 15]
                                 for attempt in range(retries):
@@ -142,9 +185,11 @@ def register_handlers(client, cfg):
 
                             # Now attempt to send while respecting local cooldowns and Telegram flood-wait
                             now = time.time()
-                            cooldown = 300  # default cooldown per linked discussion in seconds
+                            cooldown = getattr(cfg, 'COOLDOWN', 300)  # default cooldown per linked discussion in seconds
                             last = last_sent.get(linked, 0)
-                            wait_needed = max(0, cooldown - (now - last))
+                            # respect server-requested next_allowed as well
+                            na = next_allowed.get(linked, 0)
+                            wait_needed = max(0, cooldown - (now - last), na - now)
                             if wait_needed > 0:
                                 print(f"Local cooldown: need to wait {int(wait_needed)}s before sending to {linked}")
                             else:
@@ -162,11 +207,24 @@ def register_handlers(client, cfg):
                                 except FloodWaitError as fw:
                                     # Telethon tells us how many seconds to wait
                                     print('FloodWaitError: need to wait', fw.seconds, 'seconds')
-                                    # Respect the server ask
+                                    # Respect the server ask and record next allowed time
+                                    next_allowed[linked] = time.time() + fw.seconds
                                     await asyncio.sleep(fw.seconds)
                                     last_sent[linked] = time.time()
                                 except Exception as e:
-                                    print('Error sending comment:', e)
+                                    # parse server-requested wait from generic RPC error
+                                    try:
+                                        msg = str(e)
+                                        m = re.search(r"wait of (\d+) seconds", msg)
+                                        wait_seconds = int(m.group(1)) if m else None
+                                    except Exception:
+                                        wait_seconds = None
+
+                                    if wait_seconds:
+                                        next_allowed[linked] = time.time() + wait_seconds
+                                        print('Server asked to wait', wait_seconds, 'seconds before sending to', linked)
+                                    else:
+                                        print('Error sending comment:', e)
                     else:
                         print('No linked discussion found; attempting to reply (may require admin)')
                         await event.reply(comment_text)
@@ -237,13 +295,31 @@ def register_handlers(client, cfg):
                             except Exception as e:
                                 print('Could not delete previous plain message', sent_id, e)
 
-                        await client.send_message(linked, job['comment_text'], reply_to=discussion_msg_id)
-                        print('Queued comment sent as reply to discussion message', discussion_msg_id)
+                        # respect server-requested next_allowed as well
+                        na = next_allowed.get(linked, 0)
+                        if time.time() < na:
+                            print('Skipping queued send: server requested wait until', na)
+                        else:
+                            await client.send_message(linked, job['comment_text'], reply_to=discussion_msg_id)
+                            print('Queued comment sent as reply to discussion message', discussion_msg_id)
                     except FloodWaitError as fw:
                         print('Reply queue FloodWaitError, sleeping', fw.seconds)
                         await asyncio.sleep(fw.seconds)
+                        next_allowed[linked] = time.time() + fw.seconds
                     except Exception as e:
-                        print('Error sending queued comment:', e)
+                        # parse server-requested wait from generic RPC error
+                        try:
+                            msg = str(e)
+                            m = re.search(r"wait of (\d+) seconds", msg)
+                            wait_seconds = int(m.group(1)) if m else None
+                        except Exception:
+                            wait_seconds = None
+
+                        if wait_seconds:
+                            next_allowed[linked] = time.time() + wait_seconds
+                            print('Reply queue: server asked to wait', wait_seconds, 'seconds before sending to', linked)
+                        else:
+                            print('Error sending queued comment:', e)
                     finally:
                         # remove job
                         try:
