@@ -62,11 +62,12 @@ def register_handlers(client, cfg):
                             # Retry a few times with backoff because the discussion message can be created slightly
                             # after the channel post.
                             if not discussion_msg_id:
-                                retries = 3
-                                backoff = [1, 3, 6]
+                                retries = 4
+                                backoff = [2, 5, 10, 15]
                                 for attempt in range(retries):
                                     try:
-                                        recent = await client.get_messages(linked, limit=300)
+                                        # Increase search window
+                                        recent = await client.get_messages(linked, limit=500)
                                         for m in recent:
                                             # Check reply_to mapping (message in linked chat replying to the channel post)
                                             rt = getattr(m, 'reply_to', None)
@@ -87,6 +88,21 @@ def register_handlers(client, cfg):
                                                     discussion_msg_id = m.id
                                                     print('Found discussion message by fwd_from mapping')
                                                     break
+                                            # Check entities for a link back to the original post (some discussion messages
+                                            # include a t.me link to the post). Match by message id presence in any URL.
+                                            entities = getattr(m, 'entities', None)
+                                            if entities:
+                                                try:
+                                                    for ent in entities:
+                                                        url = getattr(ent, 'url', None)
+                                                        if url and str(getattr(event.message, 'id', '')) in url:
+                                                            discussion_msg_id = m.id
+                                                            print('Found discussion message by entity URL mapping')
+                                                            break
+                                                    if discussion_msg_id:
+                                                        break
+                                                except Exception:
+                                                    pass
                                         if discussion_msg_id:
                                             break
                                     except Exception as e:
