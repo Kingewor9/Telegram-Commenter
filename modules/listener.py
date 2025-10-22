@@ -269,33 +269,63 @@ def register_handlers(client, cfg):
                 # try to find discussion message similar to above
                 discussion_msg_id = None
                 try:
-                    recent = await client.get_messages(linked, limit=500)
+                    search_limit = getattr(cfg, 'REPLY_QUEUE_SEARCH_LIMIT', 500)
+                    recent = await client.get_messages(linked, limit=search_limit)
                     for m in recent:
+                        # Direct reply_to_msg_id
+                        rid_direct = getattr(m, 'reply_to_msg_id', None)
+                        if rid_direct and rid_direct == job['event_msg_id']:
+                            discussion_msg_id = m.id
+                            print('Found discussion message by direct reply_to_msg_id mapping (queue)')
+                            break
+
                         rt = getattr(m, 'reply_to', None)
                         if rt:
                             rid = getattr(rt, 'reply_to_msg_id', None)
                             if rid == job['event_msg_id']:
                                 discussion_msg_id = m.id
+                                print('Found discussion message by nested reply_to mapping (queue)')
                                 break
+
                         ff = getattr(m, 'fwd_from', None)
                         if ff:
                             cid = getattr(ff, 'channel_id', None)
                             cpost = getattr(ff, 'channel_post', None)
                             if cid == job['channel_id'] and cpost == job['event_msg_id']:
                                 discussion_msg_id = m.id
+                                print('Found discussion message by fwd_from mapping (queue)')
                                 break
+
+                        # Entities and URL patterns
                         entities = getattr(m, 'entities', None)
                         if entities:
                             try:
                                 for ent in entities:
                                     url = getattr(ent, 'url', None)
-                                    if url and str(job['event_msg_id']) in url:
-                                        discussion_msg_id = m.id
-                                        break
+                                    if url:
+                                        # direct id match in URL
+                                        if str(job['event_msg_id']) in url:
+                                            discussion_msg_id = m.id
+                                            print('Found discussion message by entity URL mapping (queue)')
+                                            break
+                                        # check common t.me/c/<abs>/<post> and t.me/<username>/<post> patterns
+                                        post_id = str(job['event_msg_id'])
+                                        if re.search(rf"t\.me/c/\d+/{post_id}", url) or re.search(rf"t\.me/.+/{post_id}", url):
+                                            discussion_msg_id = m.id
+                                            print('Found discussion message by t.me URL pattern (queue)')
+                                            break
                                 if discussion_msg_id:
                                     break
                             except Exception:
                                 pass
+                    # also check the message text itself (some clients embed t.me links directly in text)
+                    if not discussion_msg_id:
+                        for m in recent:
+                            text = getattr(m, 'message', '') or getattr(m, 'raw_text', '')
+                            if text and str(job['event_msg_id']) in text:
+                                discussion_msg_id = m.id
+                                print('Found discussion message by text containing post id (queue)')
+                                break
                 except Exception as e:
                     print('Error scanning linked discussion in reply queue:', e)
 
@@ -342,6 +372,23 @@ def register_handlers(client, cfg):
                             reply_queue.remove(job)
                         except ValueError:
                             pass
+                else:
+                    # If mapping still not found and debug dumping is enabled, log a compact view
+                    if getattr(cfg, 'DEBUG_DUMP_RECENT', False):
+                        try:
+                            dump_limit = min(10, getattr(cfg, 'REPLY_QUEUE_SEARCH_LIMIT', 50))
+                            snapshot = await client.get_messages(linked, limit=dump_limit)
+                            print('--- Debug dump: recent messages for linked', linked, '---')
+                            for m in snapshot:
+                                rid = getattr(m, 'reply_to_msg_id', None)
+                                rt = getattr(m, 'reply_to', None)
+                                ff = getattr(m, 'fwd_from', None)
+                                entities = getattr(m, 'entities', None)
+                                snippet = (getattr(m, 'message', '') or '')[:80].replace('\n', ' ')
+                                print({'id': getattr(m, 'id', None), 'snippet': snippet, 'reply_to_msg_id': rid, 'nested_reply': getattr(rt, 'reply_to_msg_id', None) if rt else None, 'fwd_from': {'channel_id': getattr(ff, 'channel_id', None) if ff else None, 'channel_post': getattr(ff, 'channel_post', None) if ff else None}, 'has_entities': bool(entities)})
+                            print('--- end debug dump ---')
+                        except Exception as e:
+                            print('Could not produce debug dump for linked', linked, e)
 
             await asyncio.sleep(cfg.REPLY_QUEUE_POLL_INTERVAL)
 
