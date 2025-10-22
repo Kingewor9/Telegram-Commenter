@@ -17,3 +17,5 @@ REPLY_QUEUE_MAX_WAIT = 300
 REPLY_QUEUE_POLL_INTERVAL = 3
 # Local cooldown per linked discussion to avoid flood limits (seconds)
 COOLDOWN = 300
+# How many recent messages to scan when searching for the discussion message
+REPLY_QUEUE_SEARCH_LIMIT = 1000
