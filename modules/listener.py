@@ -6,6 +6,10 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from modules.comment_generator import generate_comment
 from modules.delay_manager import wait_random_delay
+import config as cfg
+
+# Simple in-memory queue for replies: list of dicts {linked, event_msg_id, channel_id, comment_text, enqueued_at}
+reply_queue = []
 
 def register_handlers(client, cfg):
     print(f"Registering handler for channels: {cfg.CHANNELS}")
@@ -52,16 +56,30 @@ def register_handlers(client, cfg):
                             try:
                                 # Some Telethon versions provide get_discussion_message on the event
                                 discussion_msg = await event.get_discussion_message()
-                                if discussion_msg:
-                                    discussion_msg_id = discussion_msg.id
-                                    print('Found discussion message via event.get_discussion_message()')
+                                discussion_msg_id = getattr(discussion_msg, 'id', None)
                             except Exception as e:
-                                print('event.get_discussion_message not available or failed:', e)
+                                # get_discussion_message may not exist or may fail; fall back to scanning the discussion
+                                discussion_msg = None
+                                discussion_msg_id = None
+                                print('get_discussion_message not available or failed:', e)
 
-                            # If we couldn't find it that way, search recent messages in the linked chat.
-                            # Retry a few times with backoff because the discussion message can be created slightly
-                            # after the channel post.
-                            if not discussion_msg_id:
+                            if discussion_msg_id:
+                                try:
+                                    await client.send_message(linked, comment_text, reply_to=discussion_msg_id)
+                                    print('Comment sent to linked discussion (as reply)')
+                                except Exception as e:
+                                    print('Error sending reply to linked discussion:', e)
+                            else:
+                                # Enqueue a retry job instead of sending a plain message.
+                                print('Enqueuing reply job to wait for discussion message to appear')
+                                reply_queue.append({
+                                    'linked': linked,
+                                    'channel_id': getattr(event.chat, 'id', None),
+                                    'event_msg_id': getattr(event.message, 'id', None),
+                                    'comment_text': comment_text,
+                                    'enqueued_at': time.time(),
+                                })
+                                print('Reply job enqueued')
                                 retries = 4
                                 backoff = [2, 5, 10, 15]
                                 for attempt in range(retries):
@@ -149,3 +167,81 @@ def register_handlers(client, cfg):
                     print('Reply sent')
             except Exception as e:
                 print('Error sending comment:', e)
+
+
+    # Background task to process queued reply jobs
+    async def process_reply_queue():
+        print('Reply queue processor started')
+        while True:
+            now = time.time()
+            to_remove = []
+            for i, job in enumerate(list(reply_queue)):
+                if now - job['enqueued_at'] > cfg.REPLY_QUEUE_MAX_WAIT:
+                    print('Dropping reply job due to timeout', job)
+                    reply_queue.pop(i)
+                    continue
+
+                linked = job['linked']
+                # try to find discussion message similar to above
+                discussion_msg_id = None
+                try:
+                    recent = await client.get_messages(linked, limit=500)
+                    for m in recent:
+                        rt = getattr(m, 'reply_to', None)
+                        if rt:
+                            rid = getattr(rt, 'reply_to_msg_id', None)
+                            if rid == job['event_msg_id']:
+                                discussion_msg_id = m.id
+                                break
+                        ff = getattr(m, 'fwd_from', None)
+                        if ff:
+                            cid = getattr(ff, 'channel_id', None)
+                            cpost = getattr(ff, 'channel_post', None)
+                            if cid == job['channel_id'] and cpost == job['event_msg_id']:
+                                discussion_msg_id = m.id
+                                break
+                        entities = getattr(m, 'entities', None)
+                        if entities:
+                            try:
+                                for ent in entities:
+                                    url = getattr(ent, 'url', None)
+                                    if url and str(job['event_msg_id']) in url:
+                                        discussion_msg_id = m.id
+                                        break
+                                if discussion_msg_id:
+                                    break
+                            except Exception:
+                                pass
+                except Exception as e:
+                    print('Error scanning linked discussion in reply queue:', e)
+
+                if discussion_msg_id:
+                    # respect cooldown
+                    last = time.time()
+                    try:
+                        await client.send_message(linked, job['comment_text'], reply_to=discussion_msg_id)
+                        print('Queued comment sent as reply to discussion message', discussion_msg_id)
+                    except FloodWaitError as fw:
+                        print('Reply queue FloodWaitError, sleeping', fw.seconds)
+                        await asyncio.sleep(fw.seconds)
+                    except Exception as e:
+                        print('Error sending queued comment:', e)
+                    finally:
+                        # remove job
+                        try:
+                            reply_queue.remove(job)
+                        except ValueError:
+                            pass
+
+            await asyncio.sleep(cfg.REPLY_QUEUE_POLL_INTERVAL)
+
+    # start the background reply queue processor
+    try:
+        # schedule in client's loop
+        client.loop.create_task(process_reply_queue())
+    except Exception:
+        # If client.loop doesn't exist yet, start a background asyncio task via asyncio
+        try:
+            asyncio.get_event_loop().create_task(process_reply_queue())
+        except Exception:
+            pass
