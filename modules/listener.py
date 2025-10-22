@@ -70,16 +70,26 @@ def register_handlers(client, cfg):
                                 except Exception as e:
                                     print('Error sending reply to linked discussion:', e)
                             else:
-                                # Enqueue a retry job instead of sending a plain message.
+                                # Attempt to send a plain message immediately so users see something.
+                                sent_id = None
+                                try:
+                                    m = await client.send_message(linked, comment_text)
+                                    sent_id = getattr(m, 'id', None)
+                                    print('Sent plain message to linked discussion (will convert later if possible)', sent_id)
+                                except Exception as e:
+                                    print('Error sending immediate plain message to linked discussion:', e)
+
+                                # Enqueue a retry job that holds the sent_id so we can delete+repost later
                                 print('Enqueuing reply job to wait for discussion message to appear')
                                 reply_queue.append({
                                     'linked': linked,
                                     'channel_id': getattr(event.chat, 'id', None),
                                     'event_msg_id': getattr(event.message, 'id', None),
                                     'comment_text': comment_text,
+                                    'sent_message_id': sent_id,
                                     'enqueued_at': time.time(),
                                 })
-                                print('Reply job enqueued')
+                                print('Reply job enqueued (sent_message_id=', sent_id, ')')
                                 retries = 4
                                 backoff = [2, 5, 10, 15]
                                 for attempt in range(retries):
@@ -217,8 +227,16 @@ def register_handlers(client, cfg):
 
                 if discussion_msg_id:
                     # respect cooldown
-                    last = time.time()
                     try:
+                        # If we previously sent a plain message, delete it first (if permitted)
+                        sent_id = job.get('sent_message_id')
+                        if sent_id:
+                            try:
+                                await client.delete_messages(linked, [sent_id])
+                                print('Deleted previous plain message', sent_id)
+                            except Exception as e:
+                                print('Could not delete previous plain message', sent_id, e)
+
                         await client.send_message(linked, job['comment_text'], reply_to=discussion_msg_id)
                         print('Queued comment sent as reply to discussion message', discussion_msg_id)
                     except FloodWaitError as fw:
