@@ -55,6 +55,23 @@ def register_handlers(client, cfg):
                     if linked:
                             print(f"Sending comment to linked discussion {linked}")
                             # First try the convenient helper if available
+                            # Some Telethon versions support sending a comment linked to the channel post
+                            # by calling send_message on the channel entity with comment_to=event.message.
+                            # This often creates the threaded reply automatically in the linked discussion.
+                            try:
+                                try:
+                                    await client.send_message(event.chat, comment_text, comment_to=event.message)
+                                    print('Comment sent using comment_to on channel entity')
+                                    # record timestamp
+                                    last_sent[getattr(event.chat, 'id', None)] = time.time()
+                                    # we've posted the comment already, exit the handler
+                                    return
+                                except TypeError:
+                                    # send_message doesn't accept comment_to in this Telethon build
+                                    raise
+                            except Exception:
+                                # Not supported or failed - fall back to the existing approach
+                                pass
                             discussion_msg_id = None
                             try:
                                 # Some Telethon versions provide get_discussion_message on the event
