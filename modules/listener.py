@@ -135,11 +135,19 @@ def register_handlers(client, cfg):
                                 # If we get here we either enqueued above or already printed the error
                                 retries = 4
                                 backoff = [2, 5, 10, 15]
+                                search_limit = getattr(cfg, 'REPLY_QUEUE_SEARCH_LIMIT', 500)
                                 for attempt in range(retries):
                                     try:
                                         # Increase search window
-                                        recent = await client.get_messages(linked, limit=500)
+                                        recent = await client.get_messages(linked, limit=search_limit)
                                         for m in recent:
+                                            # Direct check: some messages expose reply_to_msg_id directly
+                                            rid_direct = getattr(m, 'reply_to_msg_id', None)
+                                            if rid_direct and rid_direct == getattr(event.message, 'id', None):
+                                                discussion_msg_id = m.id
+                                                print('Found discussion message by direct reply_to_msg_id mapping')
+                                                break
+
                                             # Check reply_to mapping (message in linked chat replying to the channel post)
                                             rt = getattr(m, 'reply_to', None)
                                             if rt:
@@ -147,7 +155,7 @@ def register_handlers(client, cfg):
                                                 rid = getattr(rt, 'reply_to_msg_id', None)
                                                 if rid == getattr(event.message, 'id', None):
                                                     discussion_msg_id = m.id
-                                                    print('Found discussion message by reply_to mapping')
+                                                    print('Found discussion message by nested reply_to mapping')
                                                     break
 
                                             # Check forwarded-from mapping (some clients forward link)
@@ -159,6 +167,7 @@ def register_handlers(client, cfg):
                                                     discussion_msg_id = m.id
                                                     print('Found discussion message by fwd_from mapping')
                                                     break
+
                                             # Check entities for a link back to the original post (some discussion messages
                                             # include a t.me link to the post). Match by message id presence in any URL.
                                             entities = getattr(m, 'entities', None)
