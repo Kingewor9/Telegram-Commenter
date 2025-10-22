@@ -40,9 +40,56 @@ def register_handlers(client, cfg):
                         linked = None
 
                     if linked:
-                        print(f"Sending comment to linked discussion {linked}")
-                        await client.send_message(linked, comment_text)
-                        print('Comment sent to linked discussion')
+                            print(f"Sending comment to linked discussion {linked}")
+                            # First try the convenient helper if available
+                            discussion_msg_id = None
+                            try:
+                                # Some Telethon versions provide get_discussion_message on the event
+                                discussion_msg = await event.get_discussion_message()
+                                if discussion_msg:
+                                    discussion_msg_id = discussion_msg.id
+                                    print('Found discussion message via event.get_discussion_message()')
+                            except Exception as e:
+                                print('event.get_discussion_message not available or failed:', e)
+
+                            # If we couldn't find it that way, search recent messages in the linked chat
+                            if not discussion_msg_id:
+                                try:
+                                    recent = await client.get_messages(linked, limit=200)
+                                    for m in recent:
+                                        # Check reply_to mapping (message in linked chat replying to the channel post)
+                                        rt = getattr(m, 'reply_to', None)
+                                        if rt:
+                                            # reply_to may be an object with reply_to_msg_id
+                                            rid = getattr(rt, 'reply_to_msg_id', None)
+                                            if rid == getattr(event.message, 'id', None):
+                                                discussion_msg_id = m.id
+                                                print('Found discussion message by reply_to mapping')
+                                                break
+
+                                        # Check forwarded-from mapping (some clients forward link)
+                                        ff = getattr(m, 'fwd_from', None)
+                                        if ff:
+                                            cid = getattr(ff, 'channel_id', None)
+                                            cpost = getattr(ff, 'channel_post', None)
+                                            if cid == getattr(event.chat, 'id', None) and cpost == getattr(event.message, 'id', None):
+                                                discussion_msg_id = m.id
+                                                print('Found discussion message by fwd_from mapping')
+                                                break
+                                except Exception as e:
+                                    print('Error searching linked discussion messages:', e)
+
+                            # If we found the discussion message, reply to it specifically
+                            if discussion_msg_id:
+                                try:
+                                    await client.send_message(linked, comment_text, reply_to=discussion_msg_id)
+                                    print('Comment sent to linked discussion (as reply)')
+                                except Exception as e:
+                                    print('Error sending reply to linked discussion:', e)
+                            else:
+                                print('No specific discussion message found; sending a plain message to linked discussion')
+                                await client.send_message(linked, comment_text)
+                                print('Comment sent to linked discussion')
                     else:
                         print('No linked discussion found; attempting to reply (may require admin)')
                         await event.reply(comment_text)
