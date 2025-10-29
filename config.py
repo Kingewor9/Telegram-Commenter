@@ -3,7 +3,7 @@ API_ID = None
 API_HASH = None
 
 # Channels you want to monitor
-CHANNELS = ["tiktokleadsgen", "stockverified", "Troll_Football_Telegram", "Manchester_Utdfc", "cristiano", "messimedia", "Uefa_Champions_Leagueee", "liverpool_worldwide", "footballfactlys", "bayern_munich", "premier_league_football_news", "Sky_Sportz_football", "goal_sport_football", "juventus", "Paris_Saint_Germaiin", "jfball", "manchester", "manchesterunited", "tottenhm", "goal264", "Fantasy_Epl", "footballxilive", "livescorexq", "goals_high", "GOAL24Main", "brfootballofficial", "europaplus_radio"]
+CHANNELS = ["tiktokleadsgen", "AlbionMain", "zhfootballll", "mtransfers", "rflive", "sportsru", "stockverified", "Troll_Football_Telegram", "Manchester_Utdfc", "cristiano", "messimedia", "Uefa_Champions_Leagueee", "liverpool_worldwide", "footballfactlys", "bayern_munich", "premier_league_football_news", "Sky_Sportz_football", "goal_sport_football", "juventus", "Paris_Saint_Germaiin", "jfball", "manchester", "manchesterunited", "tottenhm", "goal264", "Fantasy_Epl", "footballxilive", "livescorexq", "goals_high", "GOAL24Main", "brfootballofficial", "europaplus_radio"]
 
 # Behaviour controls
 MODE = "RANDOM"   # or "AI"
